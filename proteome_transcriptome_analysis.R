@@ -49,8 +49,8 @@ limma.test <- function(data,range,design,cont.matrix,merge = "merge",label = "la
     return(DE_table[,c(1,4,5,7,8)])
 }
 
-##################### main analysis start here ##################### 
-# read mouse dataset and remove zero values
+### main analysis start here ###
+########### read mouse dataset and data processing ###########
 mouse_proteome <- read_excel("5xFAD_mouse_wholeProteome_PengLab_at_StJude_v1.0.0.xlsx",sheet = 'resorted')
 colnames(mouse_proteome)[4:ncol(mouse_proteome)] = paste(colnames(mouse_proteome)[4:ncol(mouse_proteome)],"protein",sep = "_")
 mouse_proteome[mouse_proteome == 0] <- NA
@@ -82,9 +82,12 @@ mouse_proteome_limma_test <- limma.test(data = mouse_proteome_log2,
                 merge = "Protein Accession",
                 label = "5XFAD v.s. WT protein")
 mouse_proteome_log2 <- merge(mouse_proteome_log2,mouse_proteome_limma_test, by = "Protein Accession")
-mouse_proteome_log2[which(mouse_proteome_log2$Annotation == "Amyloid beta peptide (K.LVFFAEDVGSNK.G)"),"GN"] <- "A-beta"
+mouse_proteome_log2[which(mouse_proteome_log2$Annotation == "Amyloid beta peptide (K.LVFFAEDVGSNK.G)"),"GN"] <- "App"
+if(FALSE) {
 mouse_proteome_log2_unique <- mouse_proteome_log2 %>% group_by(GN) %>% 
   slice_max(order_by = abs(`5XFAD v.s. WT protein log2FC-z`), n = 1, with_ties = F)
+}
+
 # data processing of transcriptome
 design_transcriptome = matrix(c(rep(1,6),rep(0,5),rep(0,6),rep(1,5)),
                          ncol = 2, byrow = F,
@@ -102,11 +105,12 @@ mouse_transcriptome_limma_test <- limma.test(data = mouse_transcriptome_log2,
                                         merge = "Gene ID",
                                         label = "5XFAD v.s. WT mRNA")
 mouse_transcriptome_log2 <- merge(mouse_transcriptome_log2,mouse_transcriptome_limma_test, by = "Gene ID")
+if(FALSE) {
 mouse_transcriptome_log2_unique <- mouse_transcriptome_log2 %>% group_by(GN) %>% 
   slice_max(order_by = abs(`5XFAD v.s. WT mRNA log2FC-z`), n = 1, with_ties = F)
+}
 
-#density plot of log2FC and log2FC-z
-
+############# density plot of log2FC and log2FC-z ##########
 ggplot() +
   geom_density(data = mouse_proteome_log2,
                aes(x= `5XFAD v.s. WT protein log2FC`, y = ..scaled.., fill = "red"),
@@ -118,7 +122,7 @@ ggplot() +
   labs(fill = "readout", y = "Scaled density", x = "5XFAD v.s. WT log2FC") +
   theme_classic()
 
-tiff("pro_trans_colz_density.tiff",width = 1000, height = 600, units = "px",res = 200)
+jpeg("pro_trans_colz_density.jpeg",width = 1000, height = 600, units = "px",res = 200)
 ggplot() +
   geom_density(data = mouse_proteome_log2,
                aes(x= `5XFAD v.s. WT protein log2FC-z`, y = ..scaled.., fill = "red"),
@@ -131,25 +135,428 @@ ggplot() +
   theme_classic()
 dev.off()
 
-# merge proteome and transcriptome data by gene name (GN) and subset dataset by variables
-pro_trans <- merge(mouse_proteome_log2_unique, mouse_transcriptome_log2_unique, by = "GN")
+jpeg("pro_trans_colz_density_zoom.jpeg",width = 1000, height = 600, units = "px",res = 200)
+ggplot() +
+  geom_density(data = mouse_proteome_log2,
+               aes(x= `5XFAD v.s. WT protein log2FC-z`, y = ..scaled.., fill = "red"),
+               alpha = 0.5,size = 0.01) +
+  geom_density(data = mouse_transcriptome_log2,
+               aes(x= `5XFAD v.s. WT mRNA log2FC-z`, y = ..scaled.., fill = "blue"),
+               alpha = 0.5,size = 0.01) +
+  scale_fill_discrete(labels = c("protein","mRNA" )) +
+  labs(fill = "readout", y = "Scaled density", x = "5XFAD v.s. WT log2FC-z") +
+  theme_classic() +
+  xlim(c(-2,2))
+dev.off()
+
+####### merge proteome and transcriptome data ##########
+#pro_trans <- merge(mouse_proteome_log2_unique, mouse_transcriptome_log2_unique, by = "GN")
+pro_trans <- full_join(mouse_proteome_log2, mouse_transcriptome_log2, by = "GN")
+pro_trans <- pro_trans[!is.na(pro_trans$`Protein Accession`),]
+pro_trans <- pro_trans[!is.na(pro_trans$`Gene ID`),]
+names(pro_trans)
 write_xlsx(pro_trans[,c(1:3,20:25,41:44)],"pro_trans.xlsx")
 
 
+############ read human dataset and merge ########################
+human_proteome <- read_excel("2021_ADProteomics_Review_Supp_v2.0.0.xlsx",sheet = 'resorted')
+names(human_proteome)[1] <-"GN"
+human_proteome$log2fc_z_protein <- col_z_score(human_proteome[,7] %>% as.matrix())[[1]]
+human_proteome_distinct <- distinct(human_proteome,GN,.keep_all = TRUE)
 
-######### mouse proteome transcriptome slection by z and FDR ##########
+human_transcriptome <- read_excel("MayoRNAseq_RNAseq_TCX_CONvsAD_DEG_Simple.xlsx")
+human_transcriptome$beta_z_mrna <- col_z_score(human_transcriptome[,11] %>% as.matrix())[[1]]
+names(human_transcriptome)[2] <- c("GN")
+human_transcriptome_distinct <- distinct(human_transcriptome,GN,.keep_all = TRUE)
+
+pro_trans_human <- merge(human_proteome_distinct, human_transcriptome_distinct, by = "GN")
+
+write_xlsx(pro_trans_human[,c(1:3,7,6,8:9,10,20,19,22:24)],"pro_trans_human.xlsx")
+
+
+######### mouse proteome transcriptome selection by z and FDR  ##########
+# define the consistency by log2FC-z
+for(i in 1:nrow(pro_trans)){
+  if((pro_trans$`5XFAD v.s. WT mRNA log2FC-z`[i])*(pro_trans$`5XFAD v.s. WT protein log2FC-z`[i]) > 0) {
+    if(abs(pro_trans$`5XFAD v.s. WT protein log2FC-z`[i] - pro_trans$`5XFAD v.s. WT mRNA log2FC-z`[i]) > 3
+    ) {pro_trans$`consistency`[i] <- "inconsistent"
+    }else{pro_trans$`consistency`[i] <- "consistent"}
+  } else {
+    pro_trans$`consistency`[i] <- "inconsistent"
+  }}
+
+col_z_protein = colorRamp2(c(min(pro_trans$`5XFAD v.s. WT protein log2FC-z`)
+                             ,0,
+                             max(pro_trans$`5XFAD v.s. WT protein log2FC-z`)),
+                           c("blue", "white", "red"))
+col_z_mrna = colorRamp2(c(min(pro_trans$`5XFAD v.s. WT mRNA log2FC-z`)
+                          ,0,
+                          max(pro_trans$`5XFAD v.s. WT mRNA log2FC-z`)),
+                        c("blue", "white", "red"))
+
+jpeg("z_heatmap_all.jpeg", height = 1000, width = 300, units = "px", res = 100)
+Heatmap(pro_trans[order(pro_trans$`5XFAD v.s. WT protein log2FC-z`,
+                               decreasing = T),
+                  "5XFAD v.s. WT protein log2FC-z"] %>% as.matrix(),
+        show_column_names = F,cluster_columns = F,
+        show_row_names = F,cluster_rows = F,
+        heatmap_legend_param = list(title = "Log2FC-z"),
+        col = col_z_protein, border = T) +
+  Heatmap(pro_trans[order(pro_trans$`5XFAD v.s. WT protein log2FC-z`,
+                                 decreasing = T),
+                    "5XFAD v.s. WT mRNA log2FC-z"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          show_heatmap_legend = F,
+          col = col_z_protein, border = T) +
+  Heatmap(pro_trans[order(pro_trans$`5XFAD v.s. WT protein log2FC-z`,
+                          decreasing = T),
+                    "consistency"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          heatmap_legend_param = list(title = "consistency",
+                                      border = T),
+          col = c("white","black"),border = T)
+dev.off()
+
+
+pro_trans_top_up <- slice_max(filter(pro_trans,
+                                            `5XFAD v.s. WT protein BH FDR` <0.05,
+                                            `5XFAD v.s. WT protein log2FC-z` > 0),
+                                     order_by = `5XFAD v.s. WT protein log2FC-z`,
+                                     prop = 1)
+
+pro_trans_top_down <- slice_min(filter(pro_trans,
+                                              `5XFAD v.s. WT protein BH FDR` <0.05,
+                                              `5XFAD v.s. WT protein log2FC-z` < 0),
+                                       order_by = `5XFAD v.s. WT protein log2FC-z`,
+                                       prop = 1)
+
+if(FALSE) {
+  consistentcy_count <- c(
+    sum(pro_trans_top_up$consistency == "consistent")/nrow(pro_trans_top_up),
+    1-sum(pro_trans_top_up$consistency == "consistent")/nrow(pro_trans_top_up),
+    sum(pro_trans_top_down$consistency == "consistent")/nrow(pro_trans_top_down),
+    1-sum(pro_trans_top_down$consistency == "consistent")/nrow(pro_trans_top_down)
+  )
+  print(consistentcy_count)
+}
+
+jpeg("z_heatmap_top_up.jpeg", height = 800, width = 200, units = "px", res = 100)
+Heatmap(pro_trans_top_up[,"5XFAD v.s. WT protein log2FC-z"] %>% as.matrix(),
+        show_column_names = F,cluster_columns = F,
+        show_row_names = F,cluster_rows = F,
+        show_heatmap_legend = F,
+        col = col_z_protein, border = T,
+        row_split =pro_trans_top_up[,"consistency"]) +
+  Heatmap(pro_trans_top_up[,"5XFAD v.s. WT mRNA log2FC-z"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          show_heatmap_legend = F,
+          col = col_z_protein, border = T) 
+dev.off()
+
+jpeg("z_heatmap_top_down.jpeg", height = 300, width = 300, units = "px", res = 150)
+Heatmap(pro_trans_top_down[,"5XFAD v.s. WT protein log2FC-z"] %>% as.matrix(),
+        show_column_names = F,cluster_columns = F,
+        row_labels = pro_trans_top_down$GN,
+        row_names_side = "left",show_row_dend = F,
+        show_heatmap_legend = F,
+        col = col_z_protein, border = T) +
+  Heatmap(pro_trans_top_down[,"5XFAD v.s. WT mRNA log2FC-z"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          show_heatmap_legend = F,
+          col = col_z_protein, border = T) +
+  Heatmap(pro_trans_top_down[,"consistency"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          show_heatmap_legend = F,
+          col = c("white","black"),border = T)
+dev.off()
+
+pro_trans_top_up_incon <- filter(pro_trans_top_up,
+                                 consistency == "inconsistent") 
+pro_trans_top_up_con <- filter(pro_trans_top_up,
+                               consistency == "consistent") 
+pro_trans_top_down_con <- filter(pro_trans_top_down,
+                               consistency == "consistent")
+
+pro_trans_top_up_incon$`z diff` <- pro_trans_top_up_incon$`5XFAD v.s. WT protein log2FC-z` - pro_trans_top_up_incon$`5XFAD v.s. WT mRNA log2FC-z`
+
+pro_trans_top_up_incon_top <- pro_trans_top_up_incon%>%
+  slice_max(order_by = `z diff`,prop = 0.5)
+
+jpeg("z_heatmap_top_up_incon.jpeg", height = 1200, width = 250, units = "px", res = 150)
+Heatmap(pro_trans_top_up_incon_top[,"5XFAD v.s. WT protein log2FC-z"] %>% as.matrix(),
+        show_column_names = F,cluster_columns = F,
+        row_labels = pro_trans_top_up_incon_top$GN,
+        row_names_side = "left",show_row_dend = F,
+        cluster_rows = pro_trans_top_up_incon_top[,c("5XFAD v.s. WT protein log2FC-z",
+                                                     "5XFAD v.s. WT mRNA log2FC-z")] %>% diana(),
+        show_heatmap_legend = F,
+        col = col_z_protein, border = T) +
+  Heatmap(pro_trans_top_up_incon_top[,"5XFAD v.s. WT mRNA log2FC-z"] %>% as.matrix(),
+          show_column_names = F,cluster_columns = F,
+          show_row_names = F,cluster_rows = F,
+          show_heatmap_legend = F,
+          col = col_z_protein, border = T) 
+dev.off()
+
+write.table(c(pro_trans_top_up_incon_top$`Protein Accession`,
+              pro_trans_top_down$`Protein Accession`),
+            "incon_proteins.txt",quote = F,row.names = F,
+            col.names = T,)
+
+enrich_GO_result <- function(a, group = "group") {
+  a <- enrichGO(a,'org.Mm.eg.db',
+                keyType = "SYMBOL",ont="ALL",
+                pvalueCutoff=1,pAdjustMethod = "BH")
+  a <- a@result
+  names(a)[4:10] <- paste(group,names(a)[4:10], sep = "_")
+  return(a)
+}
+
+
+pro_trans_top_up_incon_GO_result <- enrich_GO_result(pro_trans_top_up_incon$GN,
+                                                     group = "up_inconsistent")
+pro_trans_top_up_con_GO_result <- enrich_GO_result(pro_trans_top_up_con$GN,
+                                                     group = "up_consistent")
+pro_trans_top_down_con_GO_result <- enrich_GO_result(pro_trans_top_down_con$GN,
+                                                     group = "down_consistent")
+
+pro_trans_top_GO_result <- merge(pro_trans_top_up_incon_GO_result,
+                                 pro_trans_top_up_con_GO_result,
+                                 by = c("ID","Description","ONTOLOGY"),
+                                 all = T)
+pro_trans_top_GO_result <- merge(pro_trans_top_GO_result,
+                                 pro_trans_top_down_con_GO_result,
+                                 by = c("ID","Description","ONTOLOGY"),
+                                 all = T)
+
+pro_trans_top_GO_result <- pro_trans_top_GO_result[order(pro_trans_top_GO_result$up_inconsistent_p.adjust),c(1:3,
+                                                      grep("p.adjust",names(pro_trans_top_GO_result)))]
+pro_trans_top_GO_result[4:6] <- log10(pro_trans_top_GO_result[4:6])*(-1)
+pro_trans_top_GO_result[is.na(pro_trans_top_GO_result)] <- 0
+
+pro_trans_top_GO_result %>% 
+  filter(ONTOLOGY == "MF") %>%
+  slice_max(order_by = up_consistent_p.adjust,n = 10) 
+
+GO_select <- c("lysosome",
+               "transport vesicle",
+               "early endosome",
+               "synaptic vesicle",
+               "lipoprotein particle",
+               "amyloid precursor protein metabolic process",
+               "regulation of amyloid-beta clearance",
+               "tumor necrosis factor production",
+               "response to lipoprotein particle",
+               "amyloid-beta formation",
+               "learning or memory",
+               "regulation of endocytosis",
+               "amyloid-beta binding",
+               "heparin binding",
+               "apolipoprotein binding",
+               "MHC class I peptide loading complex",
+               "extracellular membrane-bounded organelle",
+               "endocytic vesicle",
+               "response to interferon-gamma",
+               "antigen processing and presentation",
+               "cell killing",
+               "TAP binding",
+               "GTPase activity",
+               "T cell receptor binding",
+               "peptide binding")
+               
+
+FDR_GO <- colorRamp2(c(0,3,6),c("white", "steelblue3","steelblue4"))
+ 
+pro_trans_top_GO_result_select <- filter(pro_trans_top_GO_result, 
+                                         Description %in% GO_select)
+
+jpeg("GO_heatmap.jpeg", width = 900, height = 900, units = "px", res = 150)
+Heatmap(pro_trans_top_GO_result_select[,4:5] %>% 
+          as.matrix(),
+        row_labels = pro_trans_top_GO_result_select$Description,
+        row_names_side = "right", show_column_names = F,
+        cluster_rows = diana(pro_trans_top_GO_result_select[,4:5]),
+        cluster_columns = F, show_row_dend = F,
+        #row_split = pro_trans_top_GO_result_select$ONTOLOGY,
+        col = FDR_GO, border = T,row_names_max_width = unit(12, "cm"),
+        row_names_gp = gpar(fontsize = 16),
+        heatmap_legend_param = list(title = "-LogFDR"))
+dev.off()
+
+
+
+
+
+# GO enrichment of top up inconsistent genes
+if(FALSE) {
+pro_trans_top_up_incon_GO <- enrichGO(pro_trans_top_up_incon$GN,'org.Mm.eg.db',
+                                      keyType = "SYMBOL",ont="ALL",
+                                      pvalueCutoff=0.05,pAdjustMethod = "BH")
+
+pro_trans_top_up_incon_GO_result <- pro_trans_top_up_incon_GO@result %>% 
+  filter(p.adjust < 0.001)
+
+
+pro_trans_top_up_incon_GO<- pairwise_termsim(pro_trans_top_up_incon_GO)
+
+pro_trans_top_up_incon_GO_amyloid <- grep("amyloid",pro_trans_top_up_incon_GO_result$Description)
+pro_trans_top_up_incon_GO_amyloid <- c(pro_trans_top_up_incon_GO_amyloid,
+                                       grep("memory",pro_trans_top_up_incon_GO_result$Description))
+pro_trans_top_up_incon_GO_amyloid <- c(pro_trans_top_up_incon_GO_amyloid,
+                                       grep("lipoprotein",pro_trans_top_up_incon_GO_result$Description))
+pro_trans_top_up_incon_GO_amyloid <- unique(pro_trans_top_up_incon_GO_amyloid)
+pro_trans_top_up_incon_GO_amyloid <- pro_trans_top_up_incon_GO_result[pro_trans_top_up_incon_GO_amyloid,
+                                                                      "Description"]
+
+jpeg("pro_trans_top_up_incon_GO.jpeg",width = 1000, height = 1400, units = "px",res = 150)
+dotplot(pro_trans_top_up_incon_GO,
+        showCategory = pro_trans_top_up_incon_GO_amyloid)+
+  scale_color_gradientn(colours=c("#371ea3", "#46bac2", "#b3eebe"),
+                        guide=guide_colorbar(reverse=TRUE, order=1)) +
+  theme(panel.grid.major.y = element_line(linetype='dotted',
+                                          color='#808080'),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  guides(size = guide_legend(override.aes=list(shape=1)))
+dev.off()
+
+jpeg("pro_trans_top_up_incon_GO_top20.jpeg",width = 1000, height = 1400, units = "px",res = 150)
+dotplot(pro_trans_top_up_incon_GO,
+        showCategory = 20)+
+  scale_color_gradientn(colours=c("#371ea3", "#46bac2", "#b3eebe"),
+                        guide=guide_colorbar(reverse=TRUE, order=1)) +
+  theme(panel.grid.major.y = element_line(linetype='dotted',
+                                          color='#808080'),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  guides(size = guide_legend(override.aes=list(shape=1)))
+dev.off()
+}
+
+#### correlation of proteome and transcriptome #########
+
+jpeg("pro_trans_colz_cor.jpeg",width = 800, height = 800, units = "px",res = 250)
+ggscatterstats(
+  data = pro_trans,
+  x = "5XFAD v.s. WT mRNA log2FC-z",
+  y = "5XFAD v.s. WT protein log2FC-z",
+  xlab = "mRNA log2FC(5xFAD/WT)-z",
+  ylab = "protein log2FC(5xFAD/WT)-z",
+  marginal = F,
+  results.subtitle = F,
+  plotgrid.args = list(nrow = 3, ncol = 1),
+  point.args = list(size = 2, alpha = 0.2, stroke = 0, colour = "blue"),
+  smooth.line.args = list(size = 0.2, alpha = 0.5,
+                          color = "pink", method = lm),
+  bf.message = FALSE,
+  ggplot.component = list(xlim(c(-15,25)), ylim(c(-15,25)))
+)
+dev.off()
+
+
+jpeg("discrepancy.jpeg",width = 800, height = 800, units = "px",res = 300)
+ggplot(pro_trans) +
+  geom_point(aes(x = `5XFAD v.s. WT mRNA log2FC-z`,
+                 y = `5XFAD v.s. WT protein log2FC-z`), 
+             alpha = 1, size = 0.5) +
+  xlim(c(-10,10))+
+  ylim(c(-10,10)) +
+  theme_classic() +
+  geom_hline(yintercept = 0, size = 1, alpha = 0.7)+
+  geom_vline(xintercept = 0, size = 1, alpha = 0.7) +
+  annotate("rect", xmin = -10, xmax = 0,
+           ymin = 0, ymax = 10,
+           alpha = .1,fill = "red") +
+  annotate("rect", xmin = 0, xmax = 10,
+           ymin = -10, ymax = 0,
+           alpha = .1,fill = "blue") +
+  annotate("rect", xmin = 0, xmax = 10,
+           ymin = 0, ymax = 10,
+           alpha = .1,fill = "black") +
+  annotate("rect", xmin = -10, xmax = 0,
+           ymin = -10, ymax = 0,
+           alpha = .1,fill = "black")
+dev.off()
+
+pdf("discrepancy.pdf",width = 4, height = 4)
+ggplot(pro_trans) +
+  geom_point(aes(x = `5XFAD v.s. WT mRNA log2FC-z`,
+                 y = `5XFAD v.s. WT protein log2FC-z`), 
+             alpha = 1, size = 0.5) +
+  xlim(c(-10,10))+
+  ylim(c(-10,10)) +
+  theme_classic() +
+  geom_hline(yintercept = 0, size = 1, alpha = 0.7)+
+  geom_vline(xintercept = 0, size = 1, alpha = 0.7) +
+  annotate("rect", xmin = -10, xmax = 0,
+           ymin = 0, ymax = 10,
+           alpha = .1,fill = "red") +
+  annotate("rect", xmin = 0, xmax = 10,
+           ymin = -10, ymax = 0,
+           alpha = .1,fill = "blue") +
+  annotate("rect", xmin = 0, xmax = 10,
+           ymin = 0, ymax = 10,
+           alpha = .1,fill = "black") +
+  annotate("rect", xmin = -10, xmax = 0,
+           ymin = -10, ymax = 0,
+           alpha = .1,fill = "black")
+dev.off()
+
+jpeg("pro_trans_human_colz_cor.jpeg",width = 800, height = 800, units = "px",res = 150)
+ggscatterstats(
+  data = pro_trans_human,
+  x = "beta_z_mrna",
+  y = "log2fc_z_protein",
+  label.var = GN,
+  label.expression = (GN == "APP" |
+                        GN == "APOE"|
+                        GN == "SLIT2"|
+                        GN == "SFRP1"|
+                        GN == "SMOC1"|
+                        GN == "HTRA1"|
+                        GN == "MDK"|
+                        GN == "NTN1"|
+                        GN == "CTHRC1"|
+                        GN == "NTN3"|
+                        GN == "SLT3"|
+                        GN == "LSP1"|
+                        GN == "C4B"|
+                        GN == "CLU"|
+                        GN == "OLFML3"|
+                        GN == "ICAM1"),
+  xlab = "mRNA beta-z",
+  ylab = "protein log2FC(AD/ctl)-z",
+  results.subtitle = F,
+  marginal = F,
+  point.args = list(size = 2, alpha = 0.2, stroke = 0,
+                    colour = "blue", method = lm),
+  smooth.line.args = list(size = 0.2, alpha = 0.5,
+                          color = "pink", method = lm),
+  bf.message = FALSE,
+  ggplot.component = list(xlim(c(-10,25)), ylim(c(-10,25)))
+)
+dev.off()
+
+
+if(FALSE) {
+######### mouse proteome transcriptome selection by FDR and z  ##########
 pro_trans_scaled <- pro_trans[,c(1:3,22:23,43:44)]
 names(pro_trans_scaled)
 pro_trans_scaled$`5XFAD v.s. WT protein -log(FDR)` <- pro_trans_scaled$`5XFAD v.s. WT protein BH FDR` %>% log10() %>% abs()
 pro_trans_scaled$`5XFAD v.s. WT mRNA -log(FDR)` <- pro_trans_scaled$`5XFAD v.s. WT mRNA BH FDR` %>% log10() %>% abs()
 
-tiff("FDR_distribution_all.tiff",height = 800, width = 1000, units = "px", res = 250)
+jpeg("FDR_distribution_all.jpeg",height = 800, width = 1000, units = "px", res = 250)
 ggplot(melt(pro_trans_scaled[,8:9],variable.name = "readout", value.name = "-log(FDR)")) +
   geom_density(aes(x = `-log(FDR)`, y = ..scaled.., color = `readout`)) +
   scale_color_manual(labels = c("protein", "mRNA"), values = c("blue", "red"))
 dev.off()
 
-tiff("FDR_distribution_top.tiff",height = 800, width = 1000, units = "px", res = 250)
+jpeg("FDR_distribution_top.jpeg",height = 800, width = 1000, units = "px", res = 250)
 ggplot(melt(pro_trans_scaled[,8:9],variable.name = "readout", value.name = "-log(FDR)")) +
   geom_density(aes(x = `-log(FDR)`, y = ..scaled.., color = `readout`)) +
   scale_color_manual(labels = c("protein", "mRNA"), values = c("blue", "red")) +
@@ -186,7 +593,7 @@ for(i in 1:nrow(pro_trans_scaled)){
 col_FDR_protein = colorRamp2(c(-2, 0, 4), c("blue", "white", "red"))
 col_FDR_mrna = colorRamp2(c(-3, 0, 6), c("blue", "white", "red"))
 
-tiff("FDR_heatmap_all.tiff", height = 1000, width = 200, units = "px", res = 100)
+jpeg("FDR_heatmap_all.jpeg", height = 1000, width = 200, units = "px", res = 100)
 Heatmap(pro_trans_scaled[order(pro_trans_scaled$`5XFAD v.s. WT protein adjust -log(FDR)`,
                                decreasing = T),
                          10] %>% as.matrix(),
@@ -225,7 +632,7 @@ sum(pro_trans_scaled_top_down$consistency == "consistent")/nrow(pro_trans_scaled
 print(consistentcy_count)
 }
 
-tiff("FDR_heatmap_top_up.tiff", height = 600, width = 150, units = "px", res = 80)
+jpeg("FDR_heatmap_top_up.jpeg", height = 600, width = 150, units = "px", res = 80)
 Heatmap(pro_trans_scaled_top_up[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         show_row_names = F, show_row_dend = F,
@@ -239,7 +646,7 @@ Heatmap(pro_trans_scaled_top_up[,10] %>% as.matrix(),
           col = col_FDR_mrna,border = T,show_heatmap_legend = F) 
 dev.off()
 
-tiff("FDR_heatmap_top_down.tiff", height = 200, width = 200, units = "px", res = 100)
+jpeg("FDR_heatmap_top_down.jpeg", height = 200, width = 200, units = "px", res = 100)
 Heatmap(pro_trans_scaled_top_down[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         row_labels = pro_trans_scaled_top_down$GN,
@@ -265,7 +672,7 @@ pro_trans_scaled_top_up_con <- filter(pro_trans_scaled_top_up,
                                         consistency == "consistent") %>%
   slice_max(order_by = `5XFAD v.s. WT protein adjust -log(FDR)`,prop = 0.1)
 
-tiff("FDR_heatmap_top_up_inconsistent.tiff", height = 900, width = 230, units = "px", res = 120)
+jpeg("FDR_heatmap_top_up_inconsistent.jpeg", height = 900, width = 230, units = "px", res = 120)
 Heatmap(pro_trans_scaled_top_up_incon[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         row_labels = pro_trans_scaled_top_up_incon$GN,
@@ -280,7 +687,7 @@ Heatmap(pro_trans_scaled_top_up_incon[,10] %>% as.matrix(),
           col = col_FDR_mrna,border = T,show_heatmap_legend = F) 
 dev.off()
 
-tiff("FDR_heatmap_top_up_consistent.tiff", height = 250, width = 200, units = "px", res = 110)
+jpeg("FDR_heatmap_top_up_consistent.jpeg", height = 250, width = 200, units = "px", res = 110)
 Heatmap(pro_trans_scaled_top_up_con[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         row_labels = pro_trans_scaled_top_up_con$GN,
@@ -296,34 +703,18 @@ Heatmap(pro_trans_scaled_top_up_con[,10] %>% as.matrix(),
 dev.off()
 
 
-############ read human dataset and merge ########################
-
-human_proteome <- read_excel("2021_ADProteomics_Review_Supp_v2.0.0.xlsx",sheet = 'resorted')
-names(human_proteome)[1] <-"GN"
-human_proteome$log2fc_z_protein <- col_z_score(human_proteome[,7] %>% as.matrix())[[1]]
-human_proteome_distinct <- distinct(human_proteome,GN,.keep_all = TRUE)
-
-human_transcriptome <- read_excel("MayoRNAseq_RNAseq_TCX_CONvsAD_DEG_Simple.xlsx")
-human_transcriptome$beta_z_mrna <- col_z_score(human_transcriptome[,11] %>% as.matrix())[[1]]
-names(human_transcriptome)[2] <- c("GN")
-human_transcriptome_distinct <- distinct(human_transcriptome,GN,.keep_all = TRUE)
-
-pro_trans_human <- merge(human_proteome_distinct, human_transcriptome_distinct, by = "GN")
-
-write_xlsx(pro_trans_human[,c(1:3,7,6,8:9,10,20,19,22:24)],"pro_trans_human.xlsx")
-
-######### human proteome transcriptome section by z and FDR ##########
+######### human proteome transcriptome selection by FDR and z  ##########
 pro_trans_human_scaled <- pro_trans_human[,c(1:3,8:9,23:24)]
 pro_trans_human_scaled$`protein -log(FDR)` <- pro_trans_human_scaled$`BH FDR` %>% log10() %>% abs()
 pro_trans_human_scaled$`mRNA -log(FDR)` <- pro_trans_human_scaled$Dx.qValue %>% log10() %>% abs()
 
-tiff("FDR_distribution_human_all.tiff",height = 800, width = 1000, units = "px", res = 250)
+jpeg("FDR_distribution_human_all.jpeg",height = 800, width = 1000, units = "px", res = 250)
 ggplot(melt(pro_trans_human_scaled[,8:9],variable.name = "readout", value.name = "-log(FDR)")) +
   geom_density(aes(x = `-log(FDR)`, y = ..scaled.., color = `readout`)) +
   scale_color_manual(labels = c("protein", "mRNA"), values = c("blue", "red"))
 dev.off()
 
-tiff("FDR_distribution_human_top.tiff",height = 800, width = 1000, units = "px", res = 250)
+jpeg("FDR_distribution_human_top.jpeg",height = 800, width = 1000, units = "px", res = 250)
 ggplot(melt(pro_trans_human_scaled[,8:9],variable.name = "readout", value.name = "-log(FDR)")) +
   geom_density(aes(x = `-log(FDR)`, y = ..scaled.., color = `readout`)) +
   scale_color_manual(labels = c("protein", "mRNA"), values = c("blue", "red")) +
@@ -360,7 +751,7 @@ for(i in 1:nrow(pro_trans_human_scaled)){
 col_FDR_human_protein = colorRamp2(c(-22, 0, 31), c("blue", "white", "red"))
 col_FDR_human_mrna = colorRamp2(c(-9, 0, 9), c("blue", "white", "red"))
 
-tiff("FDR_heatmap_human_all.tiff", height = 1000, width = 200, units = "px", res = 100)
+jpeg("FDR_heatmap_human_all.jpeg", height = 1000, width = 200, units = "px", res = 100)
 Heatmap(pro_trans_human_scaled[order(pro_trans_human_scaled$`protein adjust -log(FDR)`,
                                decreasing = T),10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
@@ -397,7 +788,7 @@ if(FALSE) {
   print(consistentcy_count)
 }
 
-tiff("FDR_heatmap_human_top_up.tiff", height = 600, width = 150, units = "px", res = 80)
+jpeg("FDR_heatmap_human_top_up.jpeg", height = 600, width = 150, units = "px", res = 80)
 Heatmap(pro_trans_human_scaled_top_up[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         show_row_names = F, show_row_dend = F,
@@ -411,7 +802,7 @@ Heatmap(pro_trans_human_scaled_top_up[,10] %>% as.matrix(),
           col = col_FDR_human_mrna,border = T,show_heatmap_legend = F) 
 dev.off()
 
-tiff("FDR_heatmap_human_top_down.tiff", height = 600, width = 150, units = "px", res = 80)
+jpeg("FDR_heatmap_human_top_down.jpeg", height = 600, width = 150, units = "px", res = 80)
 Heatmap(pro_trans_human_scaled_top_down[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         show_row_names = F,show_row_dend = F,
@@ -438,7 +829,7 @@ write_delim(pro_trans_human_scaled_top_down_incon$GN %>% as.data.frame(),
             "human_top_down_inconsistent_genes.txt",col_names = F)
 
 
-tiff("FDR_heatmap_human_top_up_inconsistent.tiff", height = 1100, width = 210, units = "px", res = 100)
+jpeg("FDR_heatmap_human_top_up_inconsistent.jpeg", height = 1100, width = 210, units = "px", res = 100)
 Heatmap(pro_trans_human_scaled_top_up_incon[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         row_labels = pro_trans_human_scaled_top_up_incon$GN,
@@ -453,7 +844,7 @@ Heatmap(pro_trans_human_scaled_top_up_incon[,10] %>% as.matrix(),
           col = col_FDR_human_mrna,border = T,show_heatmap_legend = F) 
 dev.off()
 
-tiff("FDR_heatmap_human_top_down_inconsistent.tiff", height = 1100, width = 210, units = "px", res = 100)
+jpeg("FDR_heatmap_human_top_down_inconsistent.jpeg", height = 1100, width = 210, units = "px", res = 100)
 Heatmap(pro_trans_human_scaled_top_down_incon[,10] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
         row_labels = pro_trans_human_scaled_top_down_incon$GN,
@@ -489,7 +880,7 @@ mouse_human_top_up <- filter(mouse_human_top_up,
                              consistency.x == "inconsistent",
                              consistency.y == "inconsistent",)
 
-tiff("FDR_heatmap_mouse_human_top_up_inconsistent.tiff",
+jpeg("FDR_heatmap_mouse_human_top_up_inconsistent.jpeg",
      height = 200, width = 200, units = "px", res = 80)
 Heatmap(mouse_human_top_up[,11] %>% as.matrix(),
         show_column_names = F,cluster_columns = F,
@@ -515,102 +906,7 @@ Heatmap(mouse_human_top_up[,11] %>% as.matrix(),
           col = col_FDR_human_mrna,border = T,show_heatmap_legend = F) 
 dev.off()
 
-#### correlation of proteome and transcriptome #########
-
-tiff("pro_trans_colz_cor.tiff",width = 800, height = 800, units = "px",res = 150)
-ggscatterstats(
-  data = pro_trans,
-  x = "5XFAD v.s. WT mRNA log2FC-z",
-  y = "5XFAD v.s. WT protein log2FC-z",
-  label.var = GN,
-  label.expression = (GN == "App" |
-                        GN == "Apoe"|
-                        GN == "Slit2"|
-                        GN == "Sfrp1"|
-                        GN == "Smoc1"|
-                        GN == "Htra1"|
-                        GN == "Mdk"|
-                        GN == "Ntn1"|
-                        GN == "Cthrc1"|
-                        GN == "Ntn3"|
-                        GN == "Slt3"|
-                        GN == "Lsp1"|
-                        GN == "C4b"|
-                        GN == "Clu"|
-                        GN == "Olfml3"|
-                        GN == "Icam1"),
-  xlab = "mRNA log2FC(5xFAD/WT)-z",
-  ylab = "protein log2FC(5xFAD/WT)-z",
-  marginal = F,
-  results.subtitle = F,
-  plotgrid.args = list(nrow = 3, ncol = 1),
-  point.args = list(size = 2, alpha = 0.2, stroke = 0, colour = "blue"),
-  smooth.line.args = list(size = 0.2, alpha = 0.5,
-                          color = "pink", method = lm),
-  bf.message = FALSE,
-  ggplot.component = list(xlim(c(-10,25)), ylim(c(-10,25)))
-)
-dev.off()
-
-
-tiff("discrepancy.tiff",width = 800, height = 800, units = "px",res = 300)
-ggscatterstats(
-  data = pro_trans,
-  x = "5XFAD v.s. WT mRNA log2FC-z",
-  y = "5XFAD v.s. WT protein log2FC-z",
-  xlab = "",
-  ylab = "",
-  results.subtitle = F,
-  marginal = F,
-  point.args = list(size = 2, alpha = 0.3, stroke = 0,
-                    colour = "black",method = lm),
-  smooth.line.args = list(size = 1, alpha = 0.5,
-                          color = "blue", method = lm),
-  ggplot.component =
-    list(geom_abline(intercept = 0, slope = 1,
-                     color = "red", size = 1,
-                     alpha = 0.5),
-         xlim(c(-10,15)),
-         ylim(c(-10,15)))
-)
-dev.off()
-
-tiff("pro_trans_human_colz_cor.tiff",width = 800, height = 800, units = "px",res = 150)
-ggscatterstats(
-  data = pro_trans_human,
-  x = "beta_z_mrna",
-  y = "log2fc_z_protein",
-  label.var = GN,
-  label.expression = (GN == "APP" |
-                        GN == "APOE"|
-                        GN == "SLIT2"|
-                        GN == "SFRP1"|
-                        GN == "SMOC1"|
-                        GN == "HTRA1"|
-                        GN == "MDK"|
-                        GN == "NTN1"|
-                        GN == "CTHRC1"|
-                        GN == "NTN3"|
-                        GN == "SLT3"|
-                        GN == "LSP1"|
-                        GN == "C4B"|
-                        GN == "CLU"|
-                        GN == "OLFML3"|
-                        GN == "ICAM1"),
-  xlab = "mRNA beta-z",
-  ylab = "protein log2FC(AD/ctl)-z",
-  results.subtitle = F,
-  marginal = F,
-  point.args = list(size = 2, alpha = 0.2, stroke = 0,
-                    colour = "blue", method = lm),
-  smooth.line.args = list(size = 0.2, alpha = 0.5,
-                          color = "pink", method = lm),
-  bf.message = FALSE,
-  ggplot.component = list(xlim(c(-10,25)), ylim(c(-10,25)))
-)
-dev.off()
-
-
+}
 ################ protein-based selection ###########################
 protein_up <- pro_trans[which(pro_trans$`5XFAD v.s. WT protein log2FC-z` >2
                                   &pro_trans$`5XFAD v.s. WT mRNA log2FC-z` <1
@@ -627,7 +923,7 @@ protein_up_GO_result <- protein_up_GO@result
 
 protein_up_GO<- pairwise_termsim(protein_up_GO)
 
-tiff("protein_up_GO_fea.tiff",width = 1000, height = 800, units = "px",res = 150)
+jpeg("protein_up_GO_fea.jpeg",width = 1000, height = 800, units = "px",res = 150)
 emapplot(protein_up_GO,repel = T, #node_label ="none",
          cex_label_category=.8, cex_line=0.5,
          showCategory = 15) + 
@@ -643,7 +939,7 @@ protein_up_GO_topGNs <- strsplit(protein_up_GO_result[1:15,8]
 print(protein_up_GO_topGNs)
 print(length(protein_up_GO_topGNs))
 
-tiff("protein_up_cor.tiff",width = 800, height = 800, units = "px",res = 200)
+jpeg("protein_up_cor.jpeg",width = 800, height = 800, units = "px",res = 200)
 ggscatterstats(
   # arguments relevant for ggstatsplot::ggscatterstats
   data = pro_trans,
@@ -667,7 +963,7 @@ ggscatterstats(
 )
 dev.off()
 
-tiff("protein_down_cor.tiff",width = 800, height = 800, units = "px",res = 150)
+jpeg("protein_down_cor.jpeg",width = 800, height = 800, units = "px",res = 150)
 ggscatterstats(
   data = pro_trans,
   x = "5XFAD v.s. WT mRNA log2FC-z",
@@ -714,11 +1010,9 @@ pro_tran_anno <- HeatmapAnnotation(readout = c(rep("protein",16),rep("mRNA",15))
                                    border = T,
                                    simple_anno_size = unit(0.3, "cm"),
                                    annotation_name_side = "right")
-tiff("protein_up_heatmap.tiff",width = 1600, height = 1000, units = "px",res = 200)                             
+jpeg("protein_up_heatmap.jpeg",width = 1600, height = 1000, units = "px",res = 200)                             
 Heatmap(protein_up_z,cluster_columns = F, column_names_gp = gpar(fontsize = 10),
-        show_column_names = F,row_names_side = "left",show_row_dend = F,
-        heatmap_legend_param = list(title = "TMT-intensity/FKPB z-score"),
-        top_annotation = pro_tran_anno)
+        show_column_names = F,show_row_names = F,show_row_dend = F, show_heatmap_legend = F)
 dev.off()
 
 # heatmap of selected genes in log2fc-z
@@ -730,7 +1024,7 @@ pro_tran_anno2 <- HeatmapAnnotation(readout = c("protein","mRNA"),
                                     annotation_name_side = "left")
 col_fun2 = colorRamp2(c(-2, 0, 24), c("green", "white", "red"))
 
-tiff("protein_up_heatmap2.tiff",width = 400, height = 600, units = "px",res = 100)
+jpeg("protein_up_heatmap2.jpeg",width = 400, height = 600, units = "px",res = 100)
 Heatmap(protein_up_top[,c(23,44)] %>%as.matrix(),
         cluster_columns = F, show_column_names = F,
         row_names_side = "left",row_labels = protein_up_top$GN,show_row_dend = F,
@@ -741,7 +1035,7 @@ dev.off()
 
 
 # combiend heatmap     
-tiff("protein_up_heatmap3.tiff",width = 1600, height = 800, units = "px",res = 200)
+jpeg("protein_up_heatmap3.jpeg",width = 1600, height = 800, units = "px",res = 200)
 Heatmap(protein_up_top[,c(23,44)] %>%as.matrix(),
           cluster_columns = F, show_column_names = F,
           row_names_side = "left",row_labels = protein_up_top$GN,show_row_dend = F,
@@ -764,7 +1058,7 @@ protein_up_z2 <- protein_up_z2[(row.names(protein_up_z2) %in% protein_up_overlap
 ] 
 protein_up_z2 <- protein_up_z2[,c(9:16,1:8,25:31,17:24)] # resort the data for heatmap
 
-tiff("protein_up_overlap_heatmap.tiff",width = 1600, height = 800, units = "px",res = 200)
+jpeg("protein_up_overlap_heatmap.jpeg",width = 1600, height = 800, units = "px",res = 200)
 Heatmap(protein_up_overlap2[,c(23,44)] %>%as.matrix(),
         cluster_columns = F, show_column_names = F,
         row_names_side = "left",row_labels = protein_up_overlap2$GN,show_row_dend = F,
@@ -794,13 +1088,13 @@ print(length(protein_up_human_GO_topGNs))
 
 protein_up_human_GO <- pairwise_termsim(protein_up_human_GO)
 
-tiff("protein_up_human_GO_fea.tiff",width = 1000, height = 800, units = "px",res = 125)
+jpeg("protein_up_human_GO_fea.jpeg",width = 1000, height = 800, units = "px",res = 125)
 emapplot(protein_up_human_GO, cex_label_category=.8, cex_line=.5,showCategory = 30) + coord_cartesian() +
   scale_fill_continuous(low = "#e06663", high = "#327eba", name = "p.adjust",
                         guide = guide_colorbar(reverse = TRUE, order=1), trans='log10')
 dev.off()
 
-tiff("protein_up_human_cor.tiff",width = 800, height = 800, units = "px",res = 150)
+jpeg("protein_up_human_cor.jpeg",width = 800, height = 800, units = "px",res = 150)
 ggscatterstats(
   # arguments relevant for ggstatsplot::ggscatterstats
   data = pro_trans_human,
@@ -824,7 +1118,7 @@ ggscatterstats(
 dev.off()
 
 ################ mRNA-based selection ###########################
-tiff("mrna_up_cor.tiff",width = 800, height = 800, units = "px",res = 150)
+jpeg("mrna_up_cor.jpeg",width = 800, height = 800, units = "px",res = 150)
 ggscatterstats(
   # arguments relevant for ggstatsplot::ggscatterstats
   data = pro_trans,
@@ -849,7 +1143,7 @@ ggscatterstats(
 )
 dev.off()
 
-tiff("mrna_down_cor.tiff",width = 800, height = 800, units = "px",res = 150)
+jpeg("mrna_down_cor.jpeg",width = 800, height = 800, units = "px",res = 150)
 ggscatterstats(
   # arguments relevant for ggstatsplot::ggscatterstats
   data = pro_trans,
